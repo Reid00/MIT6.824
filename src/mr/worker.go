@@ -92,7 +92,8 @@ func doMapTask(mapf mapF, resp *HeartbeatRepose) {
 			// log.Println("intermediateFilePath: ", intermediateFilePath)
 			var buf bytes.Buffer
 			enc := json.NewEncoder(&buf)
-
+			// NOTE sort firstly will be good
+			sort.Sort(ByKey(intermediate))
 			for _, kv := range intermediate {
 				err := enc.Encode(&kv)
 				if err != nil {
@@ -128,7 +129,7 @@ func doReduceTask(reducef reduceF, resp *HeartbeatRepose) {
 		}
 		file.Close()
 	}
-	sort.Sort(ByKey(kva))
+	
 	results := make(map[string][]string)
 	for _, kv := range kva {
 		results[kv.Key] = append(results[kv.Key], kv.Value)
@@ -136,7 +137,7 @@ func doReduceTask(reducef reduceF, resp *HeartbeatRepose) {
 	var buf bytes.Buffer
 	for k, v := range results {
 		output := reducef(k, v)
-		fmt.Fprintf(&buf, "%v, %v \n", k, output)
+		fmt.Fprintf(&buf, "%v %v\n", k, output)
 	}
 	atomicWriteFile(generateReduceResultFileName(resp.Id), &buf)
 	doReport(resp.Id, ReducePhase)
