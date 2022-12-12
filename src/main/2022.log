@@ -9,8 +9,7 @@
 *** Starting job count test.
 --- job count test: PASS
 *** Starting early exit test.
---- output changed after first worker exited
---- early exit test: FAIL
+--- early exit test: PASS
 *** Starting crash test.
 --- crash test: PASS
-*** FAILED SOME TESTS
+*** PASSED ALL TESTS

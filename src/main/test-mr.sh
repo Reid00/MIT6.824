@@ -232,6 +232,8 @@ sleep 1
 # wait for any of the coord or workers to exit.
 # `jobs` ensures that any completed old processes from other tests
 # are not waited upon.
+
+
 jobs &> /dev/null
 if [[ "$OSTYPE" = "darwin"* ]]
 then
@@ -243,7 +245,8 @@ then
 else
   # the -n causes wait to wait for just one child process,
   # rather than waiting for all to finish.
-  wait -n
+  # wait -n
+  wait
 fi
 
 rm -f $DF
