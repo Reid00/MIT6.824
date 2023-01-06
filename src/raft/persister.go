@@ -13,8 +13,8 @@ import "sync"
 
 type Persister struct {
 	mu        sync.Mutex
-	raftstate []byte
-	snapshot  []byte
+	raftstate []byte	// raft state machine
+	snapshot  []byte	// raft snapshot
 }
 
 func MakePersister() *Persister {
