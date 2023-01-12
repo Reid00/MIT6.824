@@ -4,19 +4,19 @@
 - [官网](https://raft.github.io/)
 - [动画展示](http://thesecretlivesofdata.com/raft/#overview)
 
-论文的Firgure2 是整个 `Raft` 代码实现的核心,现在一一过一遍.
+论文的Firgure2 是整个 `Raft` 代码实现的核心,现在一一解释下.
 
 ## State
 ### Persistent state for all servers 所有Raft 节点都需要维护的持久化状态:
-- `currentTerm`: 此节点当前的任期。(Lab 2A)
-- `votedFor`:  当前任期内,此节点将选票给了谁。 `一个任期内,节点只能将选票投给某个节点`。需要持久化，从而避免重复投票。(Lab 2A)
+- `currentTerm`: 此节点当前的任期。保证重启后任期不丢失。(Lab 2A)
+- `votedFor`:  当前任期内,此节点将选票给了谁。 `一个任期内,节点只能将选票投给某个节点`。需要持久化，从而避免节点重启后重复投票。(Lab 2A)
 - `logs`: 日志条目, 每条 Entry 包含一条待施加至状态机的命令。Entry 也要记录其被发送至 Leader 时，Leader 当时的任期。Lab2B 中，在内存存储日志即可，不用担心 server 会 down 掉，测试中仅会模拟网络挂掉的情景。
 
 ### Volatile state on all servers 每一个节点都应该有的非持久化状态：
 - `commitIndex`: 已提交的最大 index。被提交的定义为，当 Leader 成功在大部分 server 上复制了一条 Entry，那么这条 Entry 就是一条已提交的 Entry。leader 节点重启后可以通过 appendEntries rpc 逐渐得到不同节点的 matchIndex，从而确认 commitIndex，follower 只需等待 leader 传递过来的 commitIndex 即可。（初始值为0，单调递增）
 - `lastApplied`: 已被状态机应用的最大 index。已提交和已应用是不同的概念，已应用指这条 Entry 已经被运用到状态机上。已提交先于已应用。同时需要注意的是，Raft 保证了已提交的 Entry 一定会被应用（通过对选举过程增加一些限制，下面会提到）。raft 算法假设了状态机本身是易失的，所以重启后状态机的状态可以通过 log[] （部分 log 可以压缩为 snapshot) 来恢复。（初始值为0，单调递增）
 
-`commitIndex` 和 `lastApplied` 分别维护 log 已提交和已应用的状态，当节点发现 commitIndex > lastApplied 时，代表着 `commitIndex` 和 `lastApplied` 间的 entries 处于已提交，未应用的状态。因此应将其间的 entries 按序`应用至状态机`。
+`commitIndex` 和 `lastApplied` 分别维护 log 已提交和已应用的状态，当节点发现 commitIndex > lastApplied 时，代表着 `commitIndex` 和 `lastApplied` 间的 entries 处于已提交，未应用的状态。因此应将其间的 entries `按序应用至状态机`。
 
 对于 Follower，commitIndex 通过 Leader AppendEntries RPC 的参数 leaderCommit 更新。对于 Leader，commitIndex 通过其维护的 matchIndex 数组更新。
 
@@ -24,7 +24,7 @@
 - `nextIndex[]`:  由 Leader 维护，nextIndex[i] 代表需要同步给 peer[i] 的下一个 entry 的 index。在 Leader 当选后，重新初始化为 Leader 的 lastLogIndex + 1。
 - `matchIndex[]`:  由 Leader 维护，matchIndex[i] 代表 Leader 已知的已在 peer[i] 上成功复制的最高 entry index。在 Leader 当选后，重新初始化为 0。
 
-每次选举后，leader 的此两个数组都应该立刻重新初始化并开始探测
+每次选举后，leader 的此两个数组都应该立刻重新初始化并开始探测。
 
 不能简单地认为 matchIndex = nextIndex - 1。
 
@@ -55,7 +55,7 @@ nextIndex 是最乐观的估计，被初始化为最大可能值；matchIndex �
 
 ### Leader
 - 刚上任时，向所有节点发送一轮心跳信息(empty AppendEntries)。此后，每隔一段固定时间，向所有节点发送一轮心跳信息，重置其他节点的 election timer，以维持自己 Leader 的身份。(Lab 2A)
-- 如果收到了来自 client 的 command，将 command 以 entry 的形式添加到日志。在 lab2B 中，client 通过 Start() 函数传入 command。
+- 如果收到了来自 client 的 command，将 command 以 entry 的形式添加到日志。在收到大多数响应后将该条目应用到状态机并回复响应给客户端。在 lab2B 中，client 通过 Start() 函数传入 command。
 - 如果 lastLogIndex >= nextIndex[i]，向 peer[i] 发送 AppendEntries RPC，RPC 中包含从 nextIndex[i] 开始的日志。
     - 如果返回值为 true，更新 nextIndex[i] 和 matchIndex[i]。
     - 如果因为 entry 冲突，RPC 返回值为 false，则将 nextIndex[i] 减1并重试。这里的重试不一定代表需要立即重试，实际上可以仅将 nextIndex[i] 减1，下次心跳时则是以新值重试。
@@ -90,7 +90,7 @@ Reply
 
 Receiver Implementation 接收日志的follower需要实现的
 1. 当 Candidate 任期小于当前节点任期时，返回 false。
-2. 如果 `votedFor` 为 null（即当前任期内此节点还未投票, Go 代码中用-1）或者 `votedFor`为 `candidateId`（即当前任期内此节点已经向此 Candidate 投过票），则同意投票；否则拒绝投票（Lab 2A）。 只有 Candidate 的 log 至少与 Receiver 的 log 一样新（up-to-date）时，才同意投票。Raft 通过两个日志的最后一个 entry 来判断哪个日志更 up-to-date。假如两个 entry 的 term 不同，term 更大的更新。term 相同时，index 更大的更新。
+2. 如果 `votedFor` 为 null（即当前任期内此节点还未投票, Go 代码中用-1）或者 `votedFor`为 `candidateId`（即当前任期内此节点已经向此 Candidate 投过票），则同意投票；否则拒绝投票（Lab 2A 只需要实现到这个程度）。 事实上还要: 只有 Candidate 的 log 至少与 Receiver 的 log 一样新（up-to-date）时，才同意投票。Raft 通过两个日志的最后一个 entry 来判断哪个日志更 up-to-date。假如两个 entry 的 term 不同，term 更大的更新。term 相同时，index 更大的更新。
 
 这里投票的额外限制(up-to-date)是为了保证已经被 commit 的 entry 一定不会被覆盖。仅有当 Candidate 的 log 包含所有已提交的 entry，才有可能当选为 Leader。
 
