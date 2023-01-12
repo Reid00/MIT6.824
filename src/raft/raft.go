@@ -472,6 +472,9 @@ func (rf *Raft) genAppendEntriesRquest(prevLogIndex int) *AppendEntriesReq {
 }
 
 func (rf *Raft) handleAppendEntriesResponse(peer int, req *AppendEntriesReq, resp *AppendEntriesResp) {
+	defer DPrintf("[handleAppendEntriesResponse]-{Node %v}'s state is {state %v,term %v,commitIndex %v,lastApplied %v,firstLog %v,lastLog %v} after handling AppendEntriesResponse %v for AppendEntriesRequest %v",
+		rf.me, rf.state, rf.currentTerm, rf.commitIndex, rf.lastApplied, rf.getFirstLog(), rf.getLastLog(), resp, req)
+
 	if rf.state == StateLeader && rf.currentTerm == req.Term {
 		if resp.Success {
 			rf.matchIndex[peer] = req.PreVoteLogIndex + len(req.Entries)
