@@ -395,6 +395,8 @@ func (rf *Raft) replicateOneRound(peer int) {
 	}
 
 	prevLogIndex := rf.nextIndex[peer] - 1
+	// Follwer 节点的nextIndex[peer]（需要追加的日志）前一个
+	// 小于 Leader 的第一个log，说明需要同步的日志在Snapshot中
 	if prevLogIndex < rf.getFirstLog().Index {
 		// only sanpshot can catch up
 		req := rf.genInstallSnapshotRequest()
@@ -458,6 +460,7 @@ func (rf *Raft) genRequestVoteReq() *RequestVoteRequest {
 
 func (rf *Raft) genAppendEntriesRquest(prevLogIndex int) *AppendEntriesReq {
 	firstIndex := rf.getFirstLog().Index
+	// [prevLogIndex+1-firstIndex:] == nextIndex[peer] 之后的日志
 	entries := make([]Entry, len(rf.logs[prevLogIndex+1-firstIndex:]))
 	copy(entries, rf.logs[prevLogIndex+1-firstIndex:])
 
@@ -494,7 +497,6 @@ func (rf *Raft) genInstallSnapshotRequest() *InstallSnapshotReq {
 		Data:              rf.persister.ReadSnapshot(),
 	}
 }
-
 func (rf *Raft) handleInstallSnapshotResponse(peer int, req *InstallSnapshotReq, resp *InstallSnapshotResp) {
 	if rf.state == StateLeader && rf.currentTerm == req.Term {
 		if resp.Term > rf.currentTerm {
@@ -509,20 +511,18 @@ func (rf *Raft) handleInstallSnapshotResponse(peer int, req *InstallSnapshotReq,
 		rf.me, rf.state, rf.currentTerm, rf.commitIndex, rf.lastApplied, rf.getFirstLog(), rf.getLastLog(), resp, req)
 }
 
-// advanceCommitIndexForLeader append entry rpc 发现某个节点和leader logIndex 不匹配
-// 向前查找match index 一遍append entry
-// commit index by matchIndex[]
+// advanceCommitIndexForLeader 为Leader 更新commitIndex
+// Leader 的commitIndex 依赖matchIndex[]
 func (rf *Raft) advanceCommitIndexForLeader() {
 	n := len(rf.matchIndex)
 	srt := make([]int, n)
 	copy(srt, rf.matchIndex)
 	insertionSort(srt)
+	// matchIndex[]中 升序排列，中间的Index 是同步到 majority 的log Index 的最大值
 	newCommitIndex := srt[n-(n/2+1)]
 	if newCommitIndex > rf.commitIndex {
-		// 新的commit Index 大于 follower[rf] 的commit Index, 查看是否和leader 匹配
 		// only advance commitIndex for current term's log
 		if rf.matchLog(rf.currentTerm, newCommitIndex) {
-			// newCommitIndex 及其之前的一同提交
 			DPrintf("{Node: %v} advance commitIndex from %d to %d with matchIndex %v in term %d",
 				rf.me, rf.commitIndex, newCommitIndex, rf.matchIndex, rf.currentTerm)
 			rf.commitIndex = newCommitIndex
@@ -535,7 +535,8 @@ func (rf *Raft) advanceCommitIndexForLeader() {
 	}
 }
 
-// advanceCommitIndexForFollower advance commitIndex by leaderCommit
+// advanceCommitIndexForFollower 为Follower 更新commitIndex
+// Follower 的commitIndex 依赖 Leader 的 AppendEntris RPC 的 leaderCommit
 func (rf *Raft) advanceCommitIndexForFollower(leaderCommit int) {
 	newCommitIndex := Min(leaderCommit, rf.getLastLog().Index)
 	if newCommitIndex > rf.commitIndex {
