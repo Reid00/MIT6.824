@@ -26,17 +26,17 @@ func (resp RequestVoteResponse) String() string {
 // ------------------------------------------------
 
 type AppendEntriesReq struct {
-	Term            int
-	LeaderId        int
-	PreVoteLogIndex int
-	PreVoteLogTerm  int
-	LeaderComment   int
-	Entries         []Entry
+	Term          int
+	LeaderId      int
+	PrevLogIndex  int
+	PrevLogTerm   int
+	LeaderComment int
+	Entries       []Entry
 }
 
 func (req AppendEntriesReq) String() string {
 	return fmt.Sprintf("{Term: %d, LeaderId: %v, PreVoteLogIndex: %v, PreVoteLogTerm: %v, LeaderComment: %v, Entries: %v}",
-		req.Term, req.LeaderId, req.PreVoteLogIndex, req.PreVoteLogTerm, req.LeaderComment, req.Entries)
+		req.Term, req.LeaderId, req.PrevLogIndex, req.PrevLogTerm, req.LeaderComment, req.Entries)
 }
 
 type AppendEntriesResp struct {

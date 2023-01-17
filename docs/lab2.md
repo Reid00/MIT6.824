@@ -3,6 +3,8 @@
 - [论文](https://raft.github.io/raft.pdf)
 - [官网](https://raft.github.io/)
 - [动画展示](http://thesecretlivesofdata.com/raft/#overview)
+- [Students' Guide to Raft](https://thesquareplanet.com/blog/students-guide-to-raft/)
+- [MIT6.824](https://pdos.csail.mit.edu/6.824/index.html)
 
 论文的Firgure2 是整个 `Raft` 代码实现的核心,现在一一解释下.
 
@@ -131,3 +133,29 @@ Receiver Implementation 接收日志的follower需要实现的
 3. 如果 Follower 的某一个 entry 与需要同步的 entries 中的一个 entry 冲突，则需要删除冲突 entry 及其之后的所有 entry。需要特别注意的是，假如没有冲突，不能删除任何 entry。因为存在 Follower 的 log 更 up-to-date 的可能。
 4. 添加 Log 中不存在的新 entry。
 5. 如果 leaderCommit > commitIndex，令 commitIndex = min(leaderCommit, index of last new entry)。此即 Follower 更新 commitIndex 的方式。
+
+### 快速恢复(Fast Backup)
+在前面（7.1）介绍的日志恢复机制中，如果Log有冲突，Leader每次会回退一条Log条目。 这在许多场景下都没有问题。但是在某些现实的场景中，至少在Lab2的测试用例中，每次只回退一条Log条目会花费很长很长的时间。所以，现实的场景中，可能一个Follower关机了很长时间，错过了大量的AppendEntries消息。这时，Leader重启了。按照Raft论文中的图2，如果一个Leader重启了，它会将所有Follower的nextIndex设置为Leader本地Log记录的下一个槽位（7.1有说明）。所以，如果一个Follower关机并错过了1000条Log条目，Leader重启之后，需要每次通过一条RPC来回退一条Log条目来遍历1000条Follower错过的Log记录。这种情况在现实中并非不可能发生。在一些不正常的场景中，假设我们有5个服务器，有1个Leader，这个Leader和另一个Follower困在一个网络分区。但是这个Leader并不知道它已经不再是Leader了。它还是会向它唯一的Follower发送AppendEntries，因为这里没有过半服务器，所以没有一条Log会commit。在另一个有多数服务器的网络分区中，系统选出了新的Leader并继续运行。旧的Leader和它的Follower可能会记录无限多的旧的任期的未commit的Log。当旧的Leader和它的Follower重新加入到集群中时，这些Log需要被删除并覆盖。可能在现实中，这不是那么容易发生，但是你会在Lab2的测试用例中发现这个场景。
+
+我将可能出现的场景分成3类，为了简化，这里只画出一个Leader（S2）和一个Follower（S1），S2将要发送一条任期号为6的AppendEntries消息给Follower。
+- 场景1：S1(Follower)没有任期6的任何Log，因此我们需要回退一整个任期的Log。
+
+![scenario](https://cdn.staticaly.com/gh/Reid00/image-host@main/20230117/image.5vhjr3670to0.webp)
+
+- 场景2：S1收到了任期4的旧Leader的多条Log，但是作为新Leader，S2只收到了一条任期4的Log。所以这里，我们需要覆盖S1中有关旧Leader的一些Log。
+
+![scenario](https://cdn.staticaly.com/gh/Reid00/image-host@main/20230117/image.75o42ybpazo0.webp)
+
+- 场景3: S1与S2的Log不冲突，但是S1缺失了部分S2中的Log
+
+![scenario](https://cdn.staticaly.com/gh/Reid00/image-host@main/20230117/image.29pfjgga39j4.webp)
+
+可以让Follower在回复Leader的AppendEntries消息中，携带3个额外的信息，来加速日志的恢复。这里的回复是指，Follower因为Log信息不匹配，拒绝了Leader的AppendEntries之后的回复。这里的三个信息是指：
+- XTerm: 这个是Follower中与Leader冲突的Log对应的任期号。在之前（7.1）有介绍Leader会在prevLogTerm中带上本地Log记录中，前一条Log的任期号。如果Follower在对应位置的任期号不匹配，它会拒绝Leader的AppendEntries消息，并将自己的任期号放在XTerm中。如果Follower在对应位置没有Log，那么这里会返回 -1。
+- XIndex: 这个是Follower中，对应任期号为XTerm的第一条Log条目的槽位号。
+- XLen: 如果Follower在对应位置没有Log，那么XTerm会返回-1，XLen表示空白的Log槽位数。
+
+我们再来看这些信息是如何在上面3个场景中，帮助Leader快速回退到适当的Log条目位置。
+- 场景1: Follower（S1）会返回XTerm=5，XIndex=2。Leader（S2）发现自己没有任期5的日志，它会将自己本地记录的，S1的nextIndex设置到XIndex，也就是S1中，任期5的第一条Log对应的槽位号。所以，如果Leader完全没有XTerm的任何Log，那么它应该回退到XIndex对应的位置（这样，Leader发出的下一条AppendEntries就可以一次覆盖S1中所有XTerm对应的Log）
+- 场景2： Follower（S1）会返回XTerm=4，XIndex=1。Leader（S2）发现自己其实有任期4的日志，它会将自己本地记录的S1的nextIndex设置到本地在XTerm位置的Log条目后面，也就是槽位2。下一次Leader发出下一条AppendEntries时，就可以一次覆盖S1中槽位2和槽位3对应的Log。
+- 场景3: Follower（S1）会返回XTerm=-1，XLen=2。这表示S1中日志太短了，以至于在冲突的位置没有Log条目，Leader应该回退到Follower最后一条Log条目的下一条，也就是槽位2，并从这开始发送AppendEntries消息。槽位2可以从XLen中的数值计算得到。

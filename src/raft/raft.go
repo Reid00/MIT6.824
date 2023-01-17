@@ -149,15 +149,32 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-// used by RequestVote Handler to judge which log is newer
+// isLogUpToDate used by RequestVote Handler to judge which log is newer
 func (rf *Raft) isLogUpToDate(term, index int) bool {
 	lastLog := rf.getLastLog()
 	return term > lastLog.Term || (term == lastLog.Term && index >= lastLog.Index)
 }
 
-// used by Start function to append a new Entry to logs
+// matchLog used by AppendEntries Handler to judge whether log is matched
+// Follower call this method
 func (rf *Raft) matchLog(term, index int) bool {
 	return index <= rf.getLastLog().Index && rf.logs[index-rf.getFirstLog().Index].Term == term
+}
+
+// appendNewEntry used by Start func to append a new Entry to logs
+func (rf *Raft) appendNewEntry(command interface{}) Entry {
+	lastLog := rf.getLastLog()
+	entry := Entry{
+		Index:   lastLog.Index,
+		Term:    rf.currentTerm,
+		Command: command,
+	}
+
+	rf.logs = append(rf.logs, entry)
+	rf.matchIndex[rf.me] = entry.Index
+	rf.nextIndex[rf.me] = entry.Index + 1
+	rf.persist()
+	return entry
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -236,22 +253,52 @@ func (rf *Raft) AppendEntries(req *AppendEntriesReq, resp *AppendEntriesResp) {
 	defer DPrintf("[AppendEntries]- {Node: %v}'s state is {state %v, term %v, commitIndex %v, lastApplied %v, firstLog %v, lastLog %v} before processing AppendEntriesRequest %v and reply AppendEntries %v",
 		rf.me, rf.state, rf.currentTerm, rf.commitIndex, rf.lastApplied, rf.getFirstLog(), rf.getLastLog(), req, resp)
 
-	// 如果发现来自leader的rpc中的term比当前peer要小,那么说明它不适合当leader
+	// 如果发现来自leader的rpc中的term比当前peer要小, 说明是应答之前的term， 不处理
 	if req.Term < rf.currentTerm {
 		resp.Term, resp.Success = rf.currentTerm, false
 		return
 	}
 
 	// 一般来讲,在vote的时候已经将currentTerm和leader同步
-	// 不过,有些peer暂时的掉线或者其他一些情况重连以后,会发现term和leader
-	// 不一样,所以收到大于自己的term的rpc也是第一时间同步.而且要将votefor重新设置为-1
-	// 等待将来选举 (说明这个peer 不是之前election 中的marjority)
+	// 不过,有些peer暂时的掉线或者其他一些情况重连以后,会发现term和leader不一样
+	// 以收到大于自己的term的rpc也是第一时间同步.而且要将votefor重新设置为-1
+	// 等待将来选举 (说明这个peer 不是之前election 中投的的marjority)
 	if req.Term > rf.currentTerm {
 		rf.currentTerm, rf.votedFor = req.Term, -1
 	}
 
 	rf.ChangeState(StateFollower)
 	rf.electionTimer.Reset(RandomizedElectionTimeout())
+
+	if req.PrevLogIndex < rf.getFirstLog().Index {
+		resp.Term, resp.Success = 0, false
+		DPrintf("[AppendEntries] - {Node: %v} receives unexpected AppendEntriesRequest %v from {Node: %v} because prevLogIndex %v < firstLogIndex %v",
+			rf.me, req, req.LeaderId, req.PrevLogIndex, rf.getFirstLog().Index)
+		return
+	}
+
+	if !rf.matchLog(req.PrevLogTerm, req.PrevLogIndex) {
+		// 日志的一致性检查失败后，递归找到需要追加日志的位置
+		resp.Term, resp.Success = rf.currentTerm, false
+		lastIndex := rf.getLastLog().Index
+
+		if lastIndex < req.PrevLogIndex {
+			// lastIndex 和 nextIndex[peer] 之间有空洞 scenario3
+			resp.ConflictTerm = rf.currentTerm
+			resp.ConflictIndex = lastIndex + 1
+		} else {
+			// 先删除再追加
+			firstIndex := rf.getFirstLog().Index
+			resp.ConflictTerm = rf.logs[req.PrevLogIndex-firstIndex].Term
+			index := req.PrevLogIndex - 1
+			for index >= firstIndex && rf.logs[index-firstIndex].Term == resp.ConflictTerm {
+				index--
+			}
+			resp.ConflictIndex = index
+		}
+		return
+	}
+
 	resp.Term, resp.Success = rf.currentTerm, true
 }
 
@@ -268,13 +315,20 @@ func (rf *Raft) AppendEntries(req *AppendEntriesReq, resp *AppendEntriesResp) {
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	// Your code here (2B).
+	if rf.state != StateLeader {
+		return -1, -1, false
+	}
 
-	return index, term, isLeader
+	entry := rf.appendNewEntry(command)
+	DPrintf("[Start] - {Node: %v} receive a new Command[%v] to replicate in term %v",
+		rf.me, entry, rf.currentTerm)
+
+	// replicate to other peers
+	rf.BroadcastHeartbeat(false)
+	return entry.Index, entry.Term, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -465,12 +519,12 @@ func (rf *Raft) genAppendEntriesRquest(prevLogIndex int) *AppendEntriesReq {
 	copy(entries, rf.logs[prevLogIndex+1-firstIndex:])
 
 	return &AppendEntriesReq{
-		Term:            rf.currentTerm,
-		LeaderId:        rf.me,
-		PreVoteLogIndex: prevLogIndex,
-		PreVoteLogTerm:  rf.logs[prevLogIndex-firstIndex].Term,
-		Entries:         entries,
-		LeaderComment:   rf.commitIndex,
+		Term:          rf.currentTerm,
+		LeaderId:      rf.me,
+		PrevLogIndex:  prevLogIndex,
+		PrevLogTerm:   rf.logs[prevLogIndex-firstIndex].Term,
+		Entries:       entries,
+		LeaderComment: rf.commitIndex,
 	}
 }
 
@@ -480,7 +534,7 @@ func (rf *Raft) handleAppendEntriesResponse(peer int, req *AppendEntriesReq, res
 
 	if rf.state == StateLeader && rf.currentTerm == req.Term {
 		if resp.Success {
-			rf.matchIndex[peer] = req.PreVoteLogIndex + len(req.Entries)
+			rf.matchIndex[peer] = req.PrevLogIndex + len(req.Entries)
 			rf.nextIndex[peer] = rf.matchIndex[peer] + 1
 			rf.advanceCommitIndexForLeader()
 		}
