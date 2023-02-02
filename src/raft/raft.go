@@ -165,7 +165,7 @@ func (rf *Raft) matchLog(term, index int) bool {
 func (rf *Raft) appendNewEntry(command interface{}) Entry {
 	lastLog := rf.getLastLog()
 	entry := Entry{
-		Index:   lastLog.Index,
+		Index:   lastLog.Index + 1,
 		Term:    rf.currentTerm,
 		Command: command,
 	}
@@ -270,6 +270,7 @@ func (rf *Raft) AppendEntries(req *AppendEntriesReq, resp *AppendEntriesResp) {
 	rf.ChangeState(StateFollower)
 	rf.electionTimer.Reset(RandomizedElectionTimeout())
 
+	// PrevLogIndex 比rf 当前的第一个Log index 还要小
 	if req.PrevLogIndex < rf.getFirstLog().Index {
 		resp.Term, resp.Success = 0, false
 		DPrintf("[AppendEntries] - {Node: %v} receives unexpected AppendEntriesRequest %v from {Node: %v} because prevLogIndex %v < firstLogIndex %v",
@@ -284,10 +285,12 @@ func (rf *Raft) AppendEntries(req *AppendEntriesReq, resp *AppendEntriesResp) {
 
 		if lastIndex < req.PrevLogIndex {
 			// lastIndex 和 nextIndex[peer] 之间有空洞 scenario3
-			resp.ConflictTerm = rf.currentTerm
+			// follower 在nextIndex[peer] 没有log
+			resp.ConflictTerm = -1
 			resp.ConflictIndex = lastIndex + 1
 		} else {
-			// 先删除再追加
+			// scenario2, 1
+			// 以任期为单位进行回退
 			firstIndex := rf.getFirstLog().Index
 			resp.ConflictTerm = rf.logs[req.PrevLogIndex-firstIndex].Term
 			index := req.PrevLogIndex - 1
@@ -298,6 +301,16 @@ func (rf *Raft) AppendEntries(req *AppendEntriesReq, resp *AppendEntriesResp) {
 		}
 		return
 	}
+
+	firstIndex := rf.getFirstLog().Index
+	for index, entry := range req.Entries {
+		if entry.Index-firstIndex >= len(rf.logs) || rf.logs[entry.Index-firstIndex].Term != entry.Term {
+			rf.logs = shrinkEntriesArray(append(rf.logs[:entry.Index-firstIndex], req.Entries[index:]...))
+			break
+		}
+	}
+
+	rf.advanceCommitIndexForFollower(req.LeaderComment)
 
 	resp.Term, resp.Success = rf.currentTerm, true
 }
@@ -430,7 +443,6 @@ func (rf *Raft) BroadcastHeartbeat(isHeartbeat bool) {
 		if peer == rf.me {
 			continue
 		}
-
 		if isHeartbeat {
 			// need sending at once to maintain leadership
 			go rf.replicateOneRound(peer)
@@ -446,6 +458,7 @@ func (rf *Raft) replicateOneRound(peer int) {
 	rf.mu.RLock()
 	if rf.state != StateLeader {
 		rf.mu.RUnlock()
+		return
 	}
 
 	prevLogIndex := rf.nextIndex[peer] - 1
@@ -528,15 +541,34 @@ func (rf *Raft) genAppendEntriesRquest(prevLogIndex int) *AppendEntriesReq {
 	}
 }
 
+// handleAppendEntriesResponse peer handle AppendEntries RPC
 func (rf *Raft) handleAppendEntriesResponse(peer int, req *AppendEntriesReq, resp *AppendEntriesResp) {
 	defer DPrintf("[handleAppendEntriesResponse]-{Node %v}'s state is {state %v,term %v,commitIndex %v,lastApplied %v,firstLog %v,lastLog %v} after handling AppendEntriesResponse %v for AppendEntriesRequest %v",
 		rf.me, rf.state, rf.currentTerm, rf.commitIndex, rf.lastApplied, rf.getFirstLog(), rf.getLastLog(), resp, req)
 
 	if rf.state == StateLeader && rf.currentTerm == req.Term {
 		if resp.Success {
+			// 更新matchIndex, nextIndex
 			rf.matchIndex[peer] = req.PrevLogIndex + len(req.Entries)
 			rf.nextIndex[peer] = rf.matchIndex[peer] + 1
 			rf.advanceCommitIndexForLeader()
+		} else {
+			if resp.Term > rf.currentTerm {
+				rf.ChangeState(StateFollower)
+				rf.currentTerm, rf.votedFor = resp.Term, -1
+				rf.persist()
+			} else if resp.Term == rf.currentTerm {
+				rf.nextIndex[peer] = resp.ConflictIndex
+				if resp.ConflictTerm != -1 {
+					firstIndex := rf.getFirstLog().Index
+					for i := req.PrevLogIndex; i >= firstIndex; i-- {
+						if rf.logs[i-firstIndex].Term == resp.ConflictTerm {
+							rf.nextIndex[peer] = i
+							break
+						}
+					}
+				}
+			}
 		}
 	}
 }
@@ -571,6 +603,7 @@ func (rf *Raft) advanceCommitIndexForLeader() {
 	n := len(rf.matchIndex)
 	srt := make([]int, n)
 	copy(srt, rf.matchIndex)
+	DPrintf("[advanceCommitIndexForLeader]- matchIndex: %v, entries: %v", srt, rf.logs)
 	insertionSort(srt)
 	// matchIndex[]中 升序排列，中间的Index 是同步到 majority 的log Index 的最大值
 	newCommitIndex := srt[n-(n/2+1)]
