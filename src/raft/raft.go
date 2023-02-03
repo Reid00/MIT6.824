@@ -253,7 +253,8 @@ func (rf *Raft) AppendEntries(req *AppendEntriesReq, resp *AppendEntriesResp) {
 	defer DPrintf("[AppendEntries]- {Node: %v}'s state is {state %v, term %v, commitIndex %v, lastApplied %v, firstLog %v, lastLog %v} before processing AppendEntriesRequest %v and reply AppendEntries %v",
 		rf.me, rf.state, rf.currentTerm, rf.commitIndex, rf.lastApplied, rf.getFirstLog(), rf.getLastLog(), req, resp)
 
-	// 如果发现来自leader的rpc中的term比当前peer要小, 说明是应答之前的term， 不处理
+	// 如果发现来自leader的rpc中的term比当前peer要小,
+	// 说明是该RPC 来自旧的term(leader)， 不处理
 	if req.Term < rf.currentTerm {
 		resp.Term, resp.Success = rf.currentTerm, false
 		return
@@ -598,7 +599,7 @@ func (rf *Raft) handleInstallSnapshotResponse(peer int, req *InstallSnapshotReq,
 }
 
 // advanceCommitIndexForLeader 为Leader 更新commitIndex
-// Leader 的commitIndex 依赖matchIndex[]
+// Leader 的commitIndex 依赖matchIndex[], lead 提交日志的方法
 func (rf *Raft) advanceCommitIndexForLeader() {
 	n := len(rf.matchIndex)
 	srt := make([]int, n)
@@ -659,6 +660,7 @@ func (rf *Raft) replicator(peer int) {
 		// just release CPU and wait other goroutine's signal if service adds new Command
 		// if this peer needs replicating entries, this goroutine will call
 		// replicateOneRound(peer) multiple times until this peer catches up, and then wait
+		// Only Leader 可以Invoke 这个方法，通过.Singal 唤醒各个peer, 不是Leader 不生效
 		for !rf.needReplicating(peer) {
 			rf.replicatorCond[peer].Wait()
 		}
@@ -741,7 +743,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		rf.matchIndex[i], rf.nextIndex[i] = 0, lastLog.Index+1
 		if i != rf.me {
 			rf.replicatorCond[i] = sync.NewCond(&sync.Mutex{})
-
 			// start replicator goroutine to replicate entries in batch
 			go rf.replicator(i)
 		}
