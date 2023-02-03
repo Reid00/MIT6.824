@@ -115,6 +115,20 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
+
+	buf := bytes.NewBuffer(data)
+	dec := labgob.NewDecoder(buf)
+
+	var currentTerm, votedFor int
+	var logs []Entry
+
+	if dec.Decode(&currentTerm) != nil || dec.Decode(&votedFor) != nil || dec.Decode(&logs) != nil {
+		DPrintf("[readPersist] - {Node: %v} restore persisted data failed", rf.me)
+	}
+
+	rf.currentTerm, rf.votedFor, rf.logs = currentTerm, votedFor, logs
+
+	rf.lastApplied, rf.commitIndex = rf.logs[0].Index, rf.logs[0].Index
 	// Your code here (2C).
 	// Example:
 	// r := bytes.NewBuffer(data)
@@ -128,7 +142,6 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
-
 }
 
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
@@ -250,6 +263,7 @@ func (rf *Raft) RequestVote(req *RequestVoteRequest, resp *RequestVoteResponse) 
 func (rf *Raft) AppendEntries(req *AppendEntriesReq, resp *AppendEntriesResp) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	defer DPrintf("[AppendEntries]- {Node: %v}'s state is {state %v, term %v, commitIndex %v, lastApplied %v, firstLog %v, lastLog %v} before processing AppendEntriesRequest %v and reply AppendEntries %v",
 		rf.me, rf.state, rf.currentTerm, rf.commitIndex, rf.lastApplied, rf.getFirstLog(), rf.getLastLog(), req, resp)
 
