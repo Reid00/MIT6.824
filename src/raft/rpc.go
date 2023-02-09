@@ -61,9 +61,11 @@ type InstallSnapshotReq struct {
 	LastIncludedIndex int
 	LastIncludedTerm  int
 	Data              []byte
+	//Offset           int //此次传输chunk在快照文件的偏移量，快照文件可能很大，因此需要分chunk，此次不分片
+	//Done             bool //是否最后一块
 }
 
-func (req InstallSnapshotReq) Strign() string {
+func (req InstallSnapshotReq) String() string {
 	return fmt.Sprintf("{Term:%v,LeaderId:%v,LastIncludedIndex:%v,LastIncludedTerm:%v,DataSize:%v}",
 		req.Term, req.LeaderId, req.LastIncludedIndex, req.LastIncludedTerm, len(req.Data))
 }
