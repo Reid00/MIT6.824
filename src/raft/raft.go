@@ -185,8 +185,9 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // Snapshot 应用层发送 snapshot 给Raft 实例
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
+
 	rf.mu.Lock()
-	defer rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	lastSnapshotIndex := rf.getFirstLog().Index
 	// 当前节点的firstLogIndex 比要添加的Snapshot LastIncludedIndex 大，说明已经存在了Snapshot 包含了更多的log
@@ -461,7 +462,6 @@ func (rf *Raft) ticker() {
 			rf.mu.Unlock()
 
 		case <-rf.heartbeatTimer.C: // 领导者发送心跳维持领导力, 2A 可以先不实现
-			DPrintf("{Node: %v} heartbeat timeout", rf.me)
 			rf.mu.Lock()
 			if rf.state == StateLeader {
 				rf.BroadcastHeartbeat(true)

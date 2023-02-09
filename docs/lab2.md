@@ -226,3 +226,59 @@ Receiver Implementation 接收日志的follower需要实现的
 
 总而言之，根据日志的性质，只要本任期的日志4能达成一致，上一条日志2就能达成一致。
 
+## Lab 2D
+## Summary
+
+快照可以由上层应用触发。当上层应用认为可以将一些已提交的 entry 压缩成 snapshot 时，其会调用节点的 `Snapshot()`函数，将需要压缩的状态机的状态数据传递给节点，作为快照。
+
+在正常情况下，仅由上层应用命令节点进行快照即可。但如果节点出现落后或者崩溃，情况则变得更加复杂。考虑一个日志非常落后的节点 i，当 Leader 向其发送 AppendEntries RPC 时，nextIndex[i] 对应的 entry 已被丢弃，压缩在快照中。这种情况下， Leader 就无法对其进行 AppendEntries。取而代之的是，这里我们应该实现一个新的 `InstallSnapshot` RPC，将 Leader 当前的快照直接发送给非常落后的 Follower。
+- `服务端触发的日志压缩`: 上层应用发送快照数据给Raft实例。
+- `leader 发送来的 InstallSnapshot`: 领导者发送快照RPC请求给追随者。当raft收到其他节点的压缩请求后，先把请求上报给上层应用，然后上层应用调用`rf.CondInstallSnapshot()`来决定是否安装快照
+
+![compaction](https://cdn.staticaly.com/gh/Reid00/image-host@main/20230206/image.5gq1fub2rvc0.webp)
+
+### 服务端触发的Log Compact
+`func (rf *Raft) Snapshot(index int, snapshot []byte)`
+应用程序将index（包括）之前的所有日志都打包为了快照，即参数snapshot [] byte。那么对于Raft要做的就是，将打包为快照的日志直接删除，并且要将快照保存起来，因为将来可能会发现某些节点大幅度落后于leader的日志，那么leader就直接发送快照给它，让他的日志“跟上来”。
+
+### 由 Leader 发送来的 InstallSnapshot
+`func (rf *Raft) InstallSnapshot(req *InstallSnapshotReq, resp *InstallSnapshotResp)`
+
+对于 leader 发过来的 InstallSnapshot，只需要判断 term 是否正确，如果无误则 follower 只能无条件接受。
+
+### Follower 收到 InstallSnapshot RPC 后
+`func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool`
+
+Follower接收到snapshot后不能够立刻应用并截断日志，raft和状态机都需要应用snapshot，这需要考虑原子性。如果raft应用成功但状态机应用snapshot失败，那么在接下来的时间里客户端读到的数据是不完整的。如果状态机应用snapshot成功但raft应用失败，那么raft会要求重传，状态机应用成功也没啥意义。因此CondInstallSnapshot是异步于raft的，并由应用层调用。
+
+假设有一个节点一直是 crash 的，然后复活了，leader 发现其落后的太多，于是发送 InstallSnapshot() RPC 到落后的节点上面。落后节点收到 InstallSnapshot() 中的 snapshot 后，通过 rf.applyCh 发送给上层 service 。上层的 service 收到 snapshot 时，调用节点的 CondInstallSnapshot() 方法。节点如果在该 snapshot 之后有新的 commit，则拒绝安装此 snapshot，service 也会放弃本次安装。反之如果在该 snapshot 之后没有新的 commit，那么节点会安装此 snapshot 并返回 true，service 收到后也同步安装。
+
+![snapshotRPC](https://cdn.staticaly.com/gh/Reid00/image-host@main/20230206/image.5xbtc7a97o40.webp)
+
+
+## InstallSnapshot PRC
+invoked by leader to send chunks of a snapshot to a follower.Leaders always send chunks in order. 
+虽然多数情况都是每个服务器独立创建快照, 但是leader有时候必须发送快照给一些落后太多的follower, 这通常发生在leader已经丢弃了下一条要发给该follower的日志条目(Log Compaction时清除掉了)的情况下。
+
+Args
+- `term`: Leader 任期。同样，InstallSnapshot RPC 也要遵循 Figure 2 中的规则。如果节点发现自己的任期小于 Leader 的任期，就要及时更新
+- `leaderId`: 用于重定向 client 
+- `lastIncludedIndex`: 快照中包含的最后一个 entry 的 index
+- `lastIncludedTerm`: 快照中包含的最后一个 entry 的 index 对应的 term
+- `offset`: 分块在快照中的偏移量
+- `data[]`: 快照数据
+- `done`: 如果是最后一块数据则为真
+
+Reply
+- `term`: 节点的任期。Leader 发现高于自己任期的节点时，更新任期并转变为 Follower
+
+Receiver Implementation 接收日志的follower需要实现的
+1. 如果 term < currentTerm，直接返回
+2. 如果是第一个分块 (offset为0) 则创建新的快照
+3. 在指定的偏移量写入数据
+4. 如果done为false, 则回复并继续等待之后的数据
+5. 保存快照文件, 丢弃所有已存在的或者部分有着更小索引号的快照
+6. 如果现存的日志拥有相同的最后任期号和索引值, 则后面的数据继续保留并且回复
+7. 丢弃全部日志
+8. 能够使用快照来恢复状态机 (并且装载快照中的集群配置)
+
