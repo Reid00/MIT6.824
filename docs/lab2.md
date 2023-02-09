@@ -81,7 +81,7 @@ nextIndex 是最乐观的估计，被初始化为最大可能值；matchIndex �
 这里最后一条是 Leader 更新 commitIndex 的方式。前两个要求都比较好理解，第三个要求是 Raft 的一个特性，即 Leader 仅会直接提交其任期内的 entry。存在这样一种情况，Leader 上任时，其最新的一些条目可能被认为处于未被提交的状态（但这些条目实际已经成功同步到了大部分节点上）。Leader 在上任时并不会检查这些 entry 是不是实际上已经可以被提交，而是通过提交此后的 entry 来间接地提交这些 entry。这种做法能够 work 的基础是 Log Matching Property：
 >Log Matching: if two logs contain an entry with the same index and term, then the logs are identical in all entries up through the given index.
 
-## Lab 2A
+## Lab 2A Leader Election
 ## Summary
 整体逻辑, 从 `ticker` goroutine 开始,启动两个Timer, `ElectionTimer` 和 `HeartbeatTimer`. 如果某个raft 节点election timeout,则会触发leader election, 调用`StartElection` 方法. `StartElection` 中发送 `RequestVote RPC`, 根据ReqestVote Response 判断是否收到选票,决定是否成为`Leader`。
 
@@ -134,7 +134,7 @@ Receiver Implementation 接收日志的follower需要实现的
 4. 添加 Log 中不存在的新 entry。
 5. 如果 leaderCommit > commitIndex，令 commitIndex = min(leaderCommit, index of last new entry)。此即 Follower 更新 commitIndex 的方式。
 
-## Lab 2B
+## Lab 2B Log Replication
 ## Summary
 相关的RPC 在[](Lab 2A) 中已经介绍, 这里不再赘述。
 启动的Goroutine：
@@ -226,7 +226,7 @@ Receiver Implementation 接收日志的follower需要实现的
 
 总而言之，根据日志的性质，只要本任期的日志4能达成一致，上一条日志2就能达成一致。
 
-## Lab 2D
+## Lab 2D - Log Compaction
 ## Summary
 
 快照可以由上层应用触发。当上层应用认为可以将一些已提交的 entry 压缩成 snapshot 时，其会调用节点的 `Snapshot()`函数，将需要压缩的状态机的状态数据传递给节点，作为快照。
