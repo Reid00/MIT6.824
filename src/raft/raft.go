@@ -649,6 +649,9 @@ func (rf *Raft) handleAppendEntriesResponse(peer int, req *AppendEntriesReq, res
 				rf.persist()
 			} else if resp.Term == rf.currentTerm { // 日志不匹配而失败
 				rf.nextIndex[peer] = resp.ConflictIndex
+				// 1. 如果在Leader 中能找到和Follower 有相同的ConflictTerm，
+				// 返回该Leader Term 的最后一个Log 作为nextIndex[peer]
+				// 2. 如果找不到相同的Term，返回Follower 中的ConflictTerm 的第一个日志，即ConflictIndex
 				if resp.ConflictTerm != -1 {
 					firstIndex := rf.getFirstLog().Index
 					for i := req.PrevLogIndex; i >= firstIndex; i-- {
