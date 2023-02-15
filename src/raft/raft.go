@@ -752,6 +752,8 @@ func (rf *Raft) HasLogInCurrentTerm() bool {
 // if it's ever committed. the second return value is the current
 // term. the third return value is true if this server believes it is
 // the leader.
+
+// Start return entry Index, term, and whether start command success
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
