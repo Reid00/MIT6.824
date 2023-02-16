@@ -25,11 +25,13 @@ type KVServer struct {
 	lastApplied  int            // record the lastApplied index to prevent stateMachine from rollback
 	stateMachine KVStateMachine // KV stateMachine
 
-	// determine whether log is duplicated by recording the last commandId and response corresponding to the clientId
-	lastOperations map[int64]OperationContext    // key: clientId, value: 这个clientId 的 Context
-	notifyChans    map[int]chan *CommandResponse // notify client goroutine by applier goroutine to response, key: log index
+	// 客户端id最后的命令id和回复内容 （clientId，{最后的commdId，最后的LastReply}）
+	lastOperations map[int64]OperationContext
+	// Leader回复给客户端的响应（LogIndex， CommandResponse
+	notifyChans map[int]chan *CommandResponse
 }
 
+// Command 客户端调用的RPC方法
 func (kv *KVServer) Command(req *CommandRequest, resp *CommandResponse) {
 	defer DPrintf("[Command]- {Node: %v} processes CommandReq %v with CommandResp %v",
 		kv.rf.Me(), req, resp)
@@ -143,6 +145,10 @@ func (kv *KVServer) applier() {
 				}
 
 				// 记录每个idx apply 到state machine 的 CommandResponse
+				// 为了保证强一致性，仅对当前 term 日志的 notifyChan 进行通知，
+				// 让之前 term 的客户端协程都超时重试。避免leader 降级为 follower
+				// 后又迅速重新当选了 leader，而此时依然有客户端协程未超时在阻塞等待，
+				// 那么此时 apply 日志后，根据 index 获得 channel 并向其中 push 执行结果就可能出错，因为可能并不对应
 				if currentTerm, isLeader := kv.rf.GetState(); isLeader && msg.CommandTerm == currentTerm {
 					ch := kv.getNotifyChan(msg.CommandIndex)
 					ch <- resp
