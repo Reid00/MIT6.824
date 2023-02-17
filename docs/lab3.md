@@ -299,3 +299,7 @@ func (kv *KVServer) Command(req *CommandRequest, resp *CommandResponse) {
 首先，日志的 snapshot 不仅需要包含状态机的状态，还需要包含用来去重的 lastOperations 哈希表。
 
 其次，apply 协程负责持锁阻塞式的去生成 snapshot，幸运的是，此时 raft 框架是不阻塞的，依然可以同步并提交日志，只是不 apply 而已。如果这里还想进一步优化的话，可以将状态机搞成 MVCC 等能够 COW 的机制，这样应该就可以不阻塞状态机的更新了
+
+优化:
+项目中 `LastOperations` 和 `NotifyChan` 都是使用map 不能并发安全，用了一张大锁保平安。
+实际上可以使用Sync.Map 然后将锁的粒度细化来优化这块
