@@ -25,8 +25,10 @@ type KVServer struct {
 	lastApplied  int            // record the lastApplied index to prevent stateMachine from rollback
 	stateMachine KVStateMachine // KV stateMachine
 
-	// 客户端id最后的命令id和回复内容 （clientId，{最后的commdId，最后的LastReply}）
-	lastOperations map[int64]OperationContext
+	// 客户端id最后的命令id和回复内容 （clientId，OperationContext{最后的commdId，最后的LastReply}）
+	lastOperations  map[int64]OperationContext
+	lastOperations2 sync.Map // clientId，OperationContext{最后的commdId，最后的LastReply}
+
 	// Leader回复给客户端的响应（LogIndex， CommandResponse
 	notifyChans map[int]chan *CommandResponse
 }
@@ -37,14 +39,23 @@ func (kv *KVServer) Command(req *CommandRequest, resp *CommandResponse) {
 		kv.rf.Me(), req, resp)
 
 	// 如果请求是重复的，直接在 OperationContext 中拿到之前的结果返回
-	kv.mu.RLock()
 	if req.Op != OpGet && kv.isDuplicatedReq(req.ClientId, req.CommandId) {
-		lastResp := kv.lastOperations[req.ClientId].LastResponse
-		resp.Value, resp.Err = lastResp.Value, lastResp.Err
-		kv.mu.RUnlock()
-		return
+		optCtx := kv.getLastOperation(req.ClientId)
+		if optCtx != nil {
+			resp.Value, resp.Err = optCtx.LastResponse.Value, optCtx.LastResponse.Err
+			return
+		}
+		panic("[Command] - OptCtx failed")
 	}
-	kv.mu.RUnlock()
+
+	// kv.mu.RLock()
+	// if req.Op != OpGet && kv.isDuplicatedReq(req.ClientId, req.CommandId) {
+	// 	lastResp := kv.lastOperations[req.ClientId].LastResponse
+	// 	resp.Value, resp.Err = lastResp.Value, lastResp.Err
+	// 	kv.mu.RUnlock()
+	// 	return
+	// }
+	// kv.mu.RUnlock()
 
 	idx, _, isLeader := kv.rf.Start(Command{req})
 	if !isLeader {
@@ -74,8 +85,26 @@ func (kv *KVServer) Command(req *CommandRequest, resp *CommandResponse) {
 
 // isDuplicatedReq 判断请求是否是重复的
 func (kv *KVServer) isDuplicatedReq(clientId int64, requestId int64) bool {
-	operationCtx, ok := kv.lastOperations[clientId]
-	return ok && requestId <= operationCtx.MaxAppliedCommandId
+	// operationCtx, ok := kv.lastOperations[clientId]
+	// return ok && requestId <= operationCtx.MaxAppliedCommandId
+	optCtx := kv.getLastOperation(clientId)
+	if optCtx != nil {
+		return requestId <= optCtx.MaxAppliedCommandId
+	}
+	return false
+}
+
+// getLastOperation 从Sync.Map 中取出 OperationContext
+func (kv *KVServer) getLastOperation(clientId int64) *OperationContext {
+	optCtx, ok := kv.lastOperations2.Load(clientId)
+	if !ok {
+		return nil
+	}
+	val, ok := optCtx.(OperationContext)
+	if ok {
+		return &val
+	}
+	return nil
 }
 
 // getNotifyChan return logIndex's corresponding  stateMachine CommandResponse
@@ -116,31 +145,44 @@ func (kv *KVServer) applier() {
 		for msg := range kv.applyCh {
 			DPrintf("[applier] - {Node: %v} tries to apply message %v", kv.rf.Me(), msg)
 			if msg.CommandValid {
-				kv.mu.Lock()
+				// kv.mu.Lock()
 				if msg.CommandIndex <= kv.lastApplied {
 					DPrintf("[applier] - {Node: %v} discards outdated message %v since a newer snapshot which lastapplied is %v has been restored",
 						kv.rf.Me(), msg, kv.lastApplied)
 
-					kv.mu.Unlock()
+					// kv.mu.Unlock()
 					continue
 				}
-
+				kv.mu.Lock()
 				kv.lastApplied = msg.CommandIndex
+				kv.mu.Unlock()
 
 				var resp = new(CommandResponse)
 				command := msg.Command.(Command)
 				if command.Op != OpGet && kv.isDuplicatedReq(command.ClientId, command.CommandId) {
-					DPrintf("[applier] - {Node: %v} doesn't apply duplicated message %v to state machine since maxAppliedCommandId is %v for client %v",
-						kv.rf.Me(), msg, kv.lastOperations[command.ClientId], command.ClientId)
+					// DPrintf("[applier] - {Node: %v} doesn't apply duplicated message %v to state machine since maxAppliedCommandId is %v for client %v",
+					// 	kv.rf.Me(), msg, kv.lastOperations[command.ClientId], command.ClientId)
 
-					resp = kv.lastOperations[command.ClientId].LastResponse
+					// resp = kv.lastOperations[command.ClientId].LastResponse
+					DPrintf("[applier] - {Node: %v} doesn't apply duplicated message %v to state machine since maxAppliedCommandId is %v for client %v",
+						kv.rf.Me(), msg, kv.getLastOperation(command.ClientId), command.ClientId)
+					optCtx := kv.getLastOperation(command.ClientId)
+					if optCtx != nil {
+						resp = optCtx.LastResponse
+					}
 				} else {
+					kv.mu.Lock()
 					resp = kv.applyLogToStateMachine(command)
+					kv.mu.Unlock()
 					if command.Op != OpGet {
-						kv.lastOperations[command.ClientId] = OperationContext{
+						// kv.lastOperations[command.ClientId] = OperationContext{
+						// 	MaxAppliedCommandId: command.CommandId,
+						// 	LastResponse:        resp,
+						// }
+						kv.lastOperations2.Store(command.ClientId, OperationContext{
 							MaxAppliedCommandId: command.CommandId,
 							LastResponse:        resp,
-						}
+						})
 					}
 				}
 
@@ -149,6 +191,7 @@ func (kv *KVServer) applier() {
 				// 让之前 term 的客户端协程都超时重试。避免leader 降级为 follower
 				// 后又迅速重新当选了 leader，而此时依然有客户端协程未超时在阻塞等待，
 				// 那么此时 apply 日志后，根据 index 获得 channel 并向其中 push 执行结果就可能出错，因为可能并不对应
+				kv.mu.Lock()
 				if currentTerm, isLeader := kv.rf.GetState(); isLeader && msg.CommandTerm == currentTerm {
 					ch := kv.getNotifyChan(msg.CommandIndex)
 					ch <- resp
