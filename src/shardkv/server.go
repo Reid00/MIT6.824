@@ -187,10 +187,7 @@ func (kv *ShardKV) applyConfiguration(conf *shardctrler.Config) *CommandResponse
 		kv.updateShardStatus(conf)
 		kv.lastConfig = kv.currentConfig
 		kv.currentConfig = *conf
-		return &CommandResponse{
-			OK,
-			"",
-		}
+		return &CommandResponse{OK, ""}
 	}
 
 	DPrintf("[applyConfiguration]-{Node: %v}-{Group: %v} rejects outdated config %v when currentConfig is %v",
