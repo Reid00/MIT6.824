@@ -46,7 +46,7 @@ func (c Config) String() string {
 
 const ExecuteTimeout = 500 * time.Millisecond
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -116,11 +116,11 @@ func (err Err) String() string {
 
 // ----------------------------------------------------
 type CommandRequest struct {
-	Servers map[int][]string //{gid: []servers}
-	GIds    []int            // raft groupid
-	GId     int              // raft group
-	Shard   int              // shard id
-	Num     int              // config num
+	Servers map[int][]string //{gid: []servers}	for Join OP
+	GIds    []int            // raft groupid for Leave
+	GId     int              // raft group	for Move
+	Shard   int              // shard id	for Move
+	Num     int              // config num	for Query
 
 	Op        OperationOp
 	ClientId  int64
@@ -143,10 +143,11 @@ func (request CommandRequest) String() string {
 }
 
 type CommandResponse struct {
-	Err    Err
-	Config Config
+	Err       Err
+	Config    Config
+	CommandId int64
 }
 
 func (response CommandResponse) String() string {
-	return fmt.Sprintf("{Err:%v,Config:%v}", response.Err, response.Config)
+	return fmt.Sprintf("{Err:%v, Config:%v, CommandId: %v}", response.Err, response.Config, response.CommandId)
 }

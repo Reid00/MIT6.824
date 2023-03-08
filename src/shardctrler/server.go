@@ -24,7 +24,7 @@ type ShardCtrler struct {
 }
 
 func (sc *ShardCtrler) Command(req *CommandRequest, resp *CommandResponse) {
-	defer DPrintf("[Command] - {Node: %v}'s state is {}, process command %v with CommandResp %v",
+	defer DPrintf("[Command]-{Node: %v}'s state is {}, process command %v with CommandResp %v",
 		sc.me, req, resp)
 
 	sc.mu.RLock()
@@ -49,9 +49,9 @@ func (sc *ShardCtrler) Command(req *CommandRequest, resp *CommandResponse) {
 
 	select {
 	case result := <-ch:
-		resp.Config, resp.Err = result.Config, result.Err
+		resp.Config, resp.Err, resp.CommandId = result.Config, result.Err, result.CommandId
 	case <-time.After(ExecuteTimeout):
-		resp.Err = ErrTimeout
+		resp.Err, resp.CommandId = ErrTimeout, req.CommandId
 	}
 
 	go func() {
@@ -121,8 +121,9 @@ func (sc *ShardCtrler) applyLogToStateMachine(command Command) *CommandResponse 
 	}
 
 	return &CommandResponse{
-		Err:    err,
-		Config: conf,
+		Err:       err,
+		Config:    conf,
+		CommandId: command.CommandId,
 	}
 }
 
