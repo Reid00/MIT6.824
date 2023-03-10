@@ -100,7 +100,7 @@ func (cmd Command) String() string {
 	return fmt.Sprintf("{Op: %v, Data: %v}", cmd.Op, cmd.Data)
 }
 
-func NewOperationCommand(req *CommandRquest) Command {
+func NewOperationCommand(req *CommandRequest) Command {
 	return Command{
 		Op:   Operation,
 		Data: *req,
@@ -164,7 +164,7 @@ func (op OperationOp) String() string {
 
 // -------------------------------------------------------------
 
-type CommandRquest struct {
+type CommandRequest struct {
 	Key       string
 	Value     string
 	Op        OperationOp
@@ -172,7 +172,7 @@ type CommandRquest struct {
 	CommandId int64
 }
 
-func (req CommandRquest) String() string {
+func (req CommandRequest) String() string {
 	return fmt.Sprintf("Shard: %v, Key: %v, Value: %v, Op: %v, ClientId: %v, CommandId: %v}",
 		key2shard(req.Key), req.Key, req.Value, req.Op, req.ClientId, req.CommandId)
 }

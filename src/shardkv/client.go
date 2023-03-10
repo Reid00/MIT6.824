@@ -42,7 +42,7 @@ type Clerk struct {
 	makeEnd func(string) *labrpc.ClientEnd
 
 	// You will have to modify this struct.
-	leaderIds map[int]int // {groupid: shard of leaderid}
+	leaderIds map[int]int // {groupid: leader if hardid of this groupid}
 	clientId  int64
 	commandId int64 //clientId + commandId define unique operation
 }
@@ -69,14 +69,14 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 }
 
 func (ck *Clerk) Get(key string) string {
-	return ck.Command(&CommandRquest{
+	return ck.Command(&CommandRequest{
 		Key: key,
 		Op:  OpGet,
 	})
 }
 
 func (ck *Clerk) Put(key, val string) {
-	ck.Command(&CommandRquest{
+	ck.Command(&CommandRequest{
 		Key:   key,
 		Value: val,
 		Op:    OpPut,
@@ -84,14 +84,14 @@ func (ck *Clerk) Put(key, val string) {
 }
 
 func (ck *Clerk) Append(key, val string) {
-	ck.Command(&CommandRquest{
+	ck.Command(&CommandRequest{
 		Key:   key,
 		Value: val,
 		Op:    OpAppend,
 	})
 }
 
-func (ck *Clerk) Command(req *CommandRquest) string {
+func (ck *Clerk) Command(req *CommandRequest) string {
 	req.ClientId, req.CommandId = ck.clientId, ck.commandId
 
 	for {

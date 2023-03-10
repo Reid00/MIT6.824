@@ -36,7 +36,7 @@ type ShardKV struct {
 	notifyChans    map[int]chan *CommandResponse // {commitIndex: commandResp}
 }
 
-func (kv *ShardKV) Command(req *CommandRquest, resp *CommandResponse) {
+func (kv *ShardKV) Command(req *CommandRequest, resp *CommandResponse) {
 	kv.mu.RLock()
 
 	if req.Op != OpGet && kv.isDuplicateRequest(req.ClientId, req.CommandId) {
@@ -47,6 +47,8 @@ func (kv *ShardKV) Command(req *CommandRquest, resp *CommandResponse) {
 		return
 	}
 
+	// return ErrWrongGroup directly to let client fetch latest configuration
+	// and perform a retry if this key can't be served by this shard at present
 	if !kv.canServe(key2shard(req.Key)) {
 		resp.Err = ErrWrongGroup
 		resp.Value = ""
@@ -111,7 +113,7 @@ func (kv *ShardKV) applier() {
 				command := msg.Command.(Command)
 				switch command.Op {
 				case Operation:
-					op := command.Data.(CommandRquest)
+					op := command.Data.(CommandRequest)
 					resp = kv.applyOperation(&msg, &op)
 				case Configuration:
 					nextConfig := command.Data.(shardctrler.Config)
@@ -152,7 +154,7 @@ func (kv *ShardKV) applier() {
 }
 
 // applyOperation 对状态机的操作, Get, Put, Append
-func (kv *ShardKV) applyOperation(msg *raft.ApplyMsg, req *CommandRquest) *CommandResponse {
+func (kv *ShardKV) applyOperation(msg *raft.ApplyMsg, req *CommandRequest) *CommandResponse {
 	var resp *CommandResponse
 	shardId := key2shard(req.Key)
 
@@ -164,8 +166,7 @@ func (kv *ShardKV) applyOperation(msg *raft.ApplyMsg, req *CommandRquest) *Comma
 			lastResp := kv.lastOperations[req.ClientId].LastResponse
 			return lastResp
 		}
-
-		resp = kv.applyLogToStateMachine(req, shardId)
+		resp = kv.applyLogToStateMachines(req, shardId)
 		if req.Op != OpGet {
 			// save max command resp
 			kv.lastOperations[req.ClientId] = OperationContext{
@@ -219,6 +220,7 @@ func (kv *ShardKV) applyInsertShards(shardsInfo *ShardOperationResponse) *Comman
 			}
 		}
 
+		// shardsInfo LastOperation 记录了最新Operation 操作
 		for clientId, OpCtx := range shardsInfo.LastOperations {
 			// stateMachine 保存的lastOperation command id 小，意味着需要update
 			if lastOperation, ok := kv.lastOperations[clientId]; !ok ||
@@ -281,7 +283,7 @@ func (kv *ShardKV) GetShardsData(req *ShardOperationRequest, resp *ShardOperatio
 	if _, isLeader := kv.rf.GetState(); !isLeader {
 		resp.Err = ErrWrongLeader
 		// log for bug TestConcurrent3  concurrent configuration change and restart...
-		DPrintf("[GetShardsData]-{Node: %v}-{Group: %v} err with resp %v", kv.me, kv.gid, resp)
+		// DPrintf("[GetShardsData]-{Node: %v}-{Group: %v} err with resp %v", kv.me, kv.gid, resp)
 		return
 	}
 
@@ -551,7 +553,7 @@ func (kv *ShardKV) initStateMachines() {
 
 func (kv *ShardKV) getNotifyChan(index int) chan *CommandResponse {
 	if _, ok := kv.notifyChans[index]; !ok {
-		kv.notifyChans[index] = make(chan *CommandResponse)
+		kv.notifyChans[index] = make(chan *CommandResponse, 1)
 	}
 	return kv.notifyChans[index]
 }
@@ -560,7 +562,7 @@ func (kv *ShardKV) deleteOutdatedNotifyChan(index int) {
 	delete(kv.notifyChans, index)
 }
 
-func (kv *ShardKV) applyLogToStateMachine(op *CommandRquest, ShardId int) *CommandResponse {
+func (kv *ShardKV) applyLogToStateMachines(op *CommandRequest, ShardId int) *CommandResponse {
 	var val string
 	var err Err
 	switch op.Op {
@@ -638,7 +640,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Command{})
-	labgob.Register(CommandRquest{})
+	labgob.Register(CommandRequest{})
 	labgob.Register(shardctrler.Config{})
 	labgob.Register(ShardOperationRequest{})
 	labgob.Register(ShardOperationResponse{})
