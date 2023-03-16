@@ -442,7 +442,7 @@ func (rf *Raft) Me() int {
 	return rf.me
 }
 
-// The ticker go routine starts a new election if this peer hasn't received
+// ticker The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	// for rf.killed() == false {

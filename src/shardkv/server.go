@@ -103,7 +103,7 @@ func (kv *ShardKV) applier() {
 					DPrintf("[applier]-{Node: %v}-{Group: %v} discards outdated message %v because a newer snapshot which lastApplied is %v has restored",
 						kv.me, kv.gid, msg, kv.lastApplied)
 					kv.mu.Unlock()
-					return
+					continue
 				}
 
 				kv.lastApplied = msg.CommandIndex
@@ -133,7 +133,6 @@ func (kv *ShardKV) applier() {
 					ch := kv.getNotifyChan(msg.CommandIndex)
 					ch <- resp
 				}
-
 				needSnapshot := kv.needSnapshot()
 				if needSnapshot {
 					kv.takeSnapshot(msg.CommandIndex)
@@ -161,7 +160,7 @@ func (kv *ShardKV) applyOperation(msg *raft.ApplyMsg, req *CommandRequest) *Comm
 	if kv.canServe(shardId) {
 		if req.Op != OpGet && kv.isDuplicateRequest(req.ClientId, req.CommandId) {
 			DPrintf("[applyOperation]-{Node: %v}-{Group: %v} doesn't apply duplicated message %v to stateMachine because maxAppliedCommandId is %v for client %v",
-				kv.me, kv.gid, kv.lastOperations[req.ClientId], kv.lastApplied, req.ClientId)
+				kv.me, kv.gid, msg, kv.lastOperations[req.ClientId], req.ClientId)
 
 			lastResp := kv.lastOperations[req.ClientId].LastResponse
 			return lastResp
@@ -221,6 +220,7 @@ func (kv *ShardKV) applyInsertShards(shardsInfo *ShardOperationResponse) *Comman
 		}
 
 		// shardsInfo LastOperation 记录了最新Operation 操作
+		// 防止出现get(x) != expect(x) 的error
 		for clientId, OpCtx := range shardsInfo.LastOperations {
 			// stateMachine 保存的lastOperation command id 小，意味着需要update
 			if lastOperation, ok := kv.lastOperations[clientId]; !ok ||
@@ -245,11 +245,11 @@ func (kv *ShardKV) applyDeleteShards(shardsInfo *ShardOperationRequest) *Command
 		for _, shardId := range shardsInfo.ShardIDs {
 			shard := kv.stateMachine[shardId]
 
-			// TODO 有没有可能本节点改为GCing 之后，还没有来得及触发GCAction() 删除远端数据?
-			// 不太可能，因为ShardId 被穿过来，说明 ShardOperationReq 已经完成 其对应的两种情况
-			// Insert(migrationAction) 或者 GcAction 已经完成
-
-			// 如果远端是 GCing Status 表示本节点 Pulling 数据已经结束
+			// 两种情况
+			// 1. A 节点Pulling 结束之后 调用通过gcAction Goroutine 调用DeleteShardsData RPC
+			// 通知B 节点删除 A 中原为Pulling现在为GCing, B 节点中 Shard状态为BePulling 的Shards
+			// 2. A 节点收到RPC OK 的消息后，本节点调用 NewDeleteShardsCommand 清理
+			// 状态为GCing 的Shard,
 			if shard.Status == GCing {
 				shard.Status = Serving
 			} else if shard.Status == BePulling {
@@ -258,7 +258,7 @@ func (kv *ShardKV) applyDeleteShards(shardsInfo *ShardOperationRequest) *Command
 				// 的Shard Status 当初应该为 BePulling 直接在对应的ShardId 上重置Shard
 				kv.stateMachine[shardId] = NewShard()
 			} else {
-				DPrintf("[applyDeleteShards]-{Node: %v}-{Group: %v} encounters duplicated sahrds deletion %v when currentConfig is %v",
+				DPrintf("[applyDeleteShards]-{Node: %v}-{Group: %v} encounters duplicated shards deletion %v when currentConfig is %v",
 					kv.me, kv.gid, shardsInfo, kv.currentConfig)
 				break
 			}
@@ -275,6 +275,12 @@ func (kv *ShardKV) applyDeleteShards(shardsInfo *ShardOperationRequest) *Command
 
 func (kv *ShardKV) applyEmptyEntry() *CommandResponse {
 	return &CommandResponse{OK, ""}
+}
+
+func (kv *ShardKV) checkEntryIncurrentTermAction() {
+	if !kv.rf.HasLogInCurrentTerm() {
+		kv.Execute(NewEmptyEntryCommand(), &CommandResponse{})
+	}
 }
 
 // RPC GetShardsData ConfigOperation 生效之后数据迁移， 将request 中shardId的数据，迁移到resp中 返回给调用方
@@ -304,8 +310,8 @@ func (kv *ShardKV) GetShardsData(req *ShardOperationRequest, resp *ShardOperatio
 		resp.Shards[shardId] = kv.stateMachine[shardId].deepCopy()
 	}
 
-	// TODO why this action doesn't need to add a record
 	// LastOpertion 只记录KV Operation相关的Resp
+	// 不仅把Shard 的数据从远端pull 来给调用方，还要把这个shard 相关的lastOperations 同样给对方
 	resp.LastOperations = make(map[int64]OperationContext)
 	for cleintId, opCtx := range kv.lastOperations {
 		resp.LastOperations[cleintId] = opCtx.deepCopy()
@@ -576,12 +582,6 @@ func (kv *ShardKV) applyLogToStateMachines(op *CommandRequest, ShardId int) *Com
 	return &CommandResponse{
 		Err:   err,
 		Value: val,
-	}
-}
-
-func (kv *ShardKV) checkEntryIncurrentTermAction() {
-	if !kv.rf.HasLogInCurrentTerm() {
-		kv.Execute(NewEmptyEntryCommand(), &CommandResponse{})
 	}
 }
 

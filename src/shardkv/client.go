@@ -109,6 +109,7 @@ func (ck *Clerk) Command(req *CommandRequest) string {
 
 			for {
 				var resp CommandResponse
+				// 循环查找LeaderId
 				ok := ck.makeEnd(servers[newLeaderId]).Call("ShardKV.Command", req, &resp)
 
 				if ok && (resp.Err == OK || resp.Err == ErrNoKey) {
